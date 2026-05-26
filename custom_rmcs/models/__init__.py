@@ -12,7 +12,6 @@ from .rmcs import (
     RMCSAdjustmentDocument,
     PerformanceObligation,
 )
-from .lineage import LineageEntry, LineageMap
 from .allocation import AllocatedRevenueLine, BillingSplit
 
 __all__ = [
@@ -27,8 +26,6 @@ __all__ = [
     "RMCSSourceDocumentLine",
     "RMCSAdjustmentDocument",
     "PerformanceObligation",
-    "LineageEntry",
-    "LineageMap",
     "AllocatedRevenueLine",
     "BillingSplit",
 ]

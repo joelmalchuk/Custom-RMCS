@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
+from ..identifiers import source_document_number
 from ..models import (
     AllocatedRevenueLine,
     OMOrder,
@@ -60,7 +61,7 @@ def build_source_documents(
 
         documents.append(
             RMCSSourceDocument(
-                source_document_number=f"SD-{order.order_number}",
+                source_document_number=source_document_number(order.order_number),
                 source_system_code=source_system_code,
                 contract_identifier=order.order_number,
                 customer_number=order.customer_number,
@@ -70,7 +71,7 @@ def build_source_documents(
                 lines=tuple(doc_lines),
                 is_modification=order.contract_modification_of is not None,
                 modifies_document_number=(
-                    f"SD-{order.contract_modification_of}"
+                    source_document_number(order.contract_modification_of)
                     if order.contract_modification_of
                     else None
                 ),

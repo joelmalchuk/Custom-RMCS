@@ -1,17 +1,20 @@
+"""The OM <-> AR relationship is read directly from AR DFFs (no lineage map).
+These tests pin down the collapse step and the deterministic id function."""
+
 from decimal import Decimal
 
+import pytest
+
 from custom_rmcs.allocation import StaticSSPCatalog, collapse_to_revenue_lines
-from custom_rmcs.lineage import build_lineage
+from custom_rmcs.identifiers import revenue_line_id
 
 
 def test_split_ar_lines_collapse_to_one_revenue_line(
     simple_om_order, simple_ar_invoice
 ):
-    lineage = build_lineage([simple_om_order], [simple_ar_invoice])
     catalog = StaticSSPCatalog(by_item={"RX-100": Decimal("1000.00")})
-
     revenue_lines = collapse_to_revenue_lines(
-        [simple_om_order], [simple_ar_invoice], catalog, lineage
+        [simple_om_order], [simple_ar_invoice], catalog
     )
 
     assert len(revenue_lines) == 1
@@ -22,35 +25,32 @@ def test_split_ar_lines_collapse_to_one_revenue_line(
     assert rl.billing_split.customer_amount == Decimal("200.00")
     assert rl.billing_split.insurance_amount == Decimal("800.00")
     assert rl.billing_split.total == Decimal("1000.00")
+    assert rl.revenue_line_id == revenue_line_id("OM-1001", "1")
 
 
-def test_lineage_resolves_ar_line_back_to_om_line(
-    simple_om_order, simple_ar_invoice
-):
-    lineage = build_lineage([simple_om_order], [simple_ar_invoice])
-    entry = lineage.for_ar_line("AR-9001", "1")
-    assert entry is not None
-    assert entry.om_order_number == "OM-1001"
-    assert entry.is_billing_split is True
-    assert entry.revenue_line_id == "REV-OM-1001-1"
-
-    customer_and_insurance = lineage.for_om_line("OM-1001", "1")
-    assert {e.price_component_code for e in customer_and_insurance} == {
-        "CUSTOMER_PAY",
-        "INSURANCE_PAY",
-    }
+def test_revenue_line_id_is_pure_and_stable():
+    assert revenue_line_id("OM-1001", "1") == "REV-OM-1001-1"
+    assert revenue_line_id("OM-1001", "1") == revenue_line_id("OM-1001", "1")
 
 
-def test_lineage_rejects_unknown_om_line(simple_om_order, simple_ar_invoice):
-    bad = type(simple_ar_invoice)(
-        invoice_number=simple_ar_invoice.invoice_number,
-        customer_number=simple_ar_invoice.customer_number,
-        business_unit=simple_ar_invoice.business_unit,
-        invoice_date=simple_ar_invoice.invoice_date,
-        currency_code=simple_ar_invoice.currency_code,
+def test_collapse_quarantines_ar_with_unknown_om_ref(simple_om_order):
+    """An AR line whose OM-ref DFFs point at an unknown OM order must not
+    silently produce revenue. Today, `collapse_to_revenue_lines` simply
+    yields no revenue line for those AR rows because it iterates OM, not
+    AR; the unmatched AR amount surfaces in reconciliation."""
+    from datetime import date
+
+    from custom_rmcs.models import ARInvoice, ARInvoiceLine
+
+    bad = ARInvoice(
+        invoice_number="AR-OOPS",
+        customer_number="C-42",
+        business_unit="US-OPS",
+        invoice_date=date(2026, 5, 3),
+        currency_code="USD",
         lines=(
-            simple_ar_invoice.lines[0].__class__(
-                invoice_line_number="99",
+            ARInvoiceLine(
+                invoice_line_number="1",
                 om_order_number="OM-DOES-NOT-EXIST",
                 om_line_number="1",
                 price_component_code="CUSTOMER_PAY",
@@ -60,7 +60,10 @@ def test_lineage_rejects_unknown_om_line(simple_om_order, simple_ar_invoice):
             ),
         ),
     )
-    import pytest
-
-    with pytest.raises(ValueError):
-        build_lineage([simple_om_order], [bad])
+    catalog = StaticSSPCatalog(by_item={"RX-100": Decimal("1000.00")})
+    rl = collapse_to_revenue_lines([simple_om_order], [bad], catalog)
+    # one OM line in, one revenue line out; the orphan AR line is not
+    # merged into anything (it will appear in reconciliation as a variance)
+    assert len(rl) == 1
+    assert rl[0].om_order_number == "OM-1001"
+    assert rl[0].allocated_amount == Decimal("0")  # nothing matched from AR

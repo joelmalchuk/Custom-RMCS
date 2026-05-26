@@ -11,11 +11,11 @@ from __future__ import annotations
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Iterable
 
+from ..identifiers import revenue_line_id
 from ..models import (
     AllocatedRevenueLine,
     ARInvoice,
     BillingSplit,
-    LineageMap,
     OMOrder,
 )
 from ..models.om import CUSTOMER_PAY, INSURANCE_PAY
@@ -57,9 +57,12 @@ def collapse_to_revenue_lines(
     om_orders: Iterable[OMOrder],
     ar_invoices: Iterable[ARInvoice],
     ssp_catalog: SSPCatalog,
-    lineage: LineageMap,
 ) -> list[AllocatedRevenueLine]:
     """Build one un-allocated `AllocatedRevenueLine` per OM line.
+
+    The relationship between AR lines and OM lines is read directly from
+    DFFs on the AR line (``om_order_number``, ``om_line_number``,
+    ``price_component_code``); no separate lineage index is required.
 
     The ``allocated_amount`` is initialized to the AR-side total (the actual
     transaction price for the line). The `allocate` step refines this with
@@ -80,7 +83,7 @@ def collapse_to_revenue_lines(
             )
             revenue_lines.append(
                 AllocatedRevenueLine(
-                    revenue_line_id=lineage.revenue_line_id_for(
+                    revenue_line_id=revenue_line_id(
                         order.order_number, om_line.line_number
                     ),
                     om_order_number=order.order_number,

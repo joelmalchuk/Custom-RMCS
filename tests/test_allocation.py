@@ -6,7 +6,6 @@ from custom_rmcs.allocation import (
     allocate,
     collapse_to_revenue_lines,
 )
-from custom_rmcs.lineage import build_lineage
 from custom_rmcs.models import (
     ARInvoice,
     ARInvoiceLine,
@@ -78,7 +77,6 @@ def _invoice_for_order() -> ARInvoice:
 def test_relative_ssp_reallocates_within_contract():
     order = _order_two_lines()
     invoice = _invoice_for_order()
-    lineage = build_lineage([order], [invoice])
 
     # SSPs different from the actual transaction price -> RMCS would
     # reallocate. We expect the same outcome from our allocator.
@@ -86,7 +84,7 @@ def test_relative_ssp_reallocates_within_contract():
         by_item={"A": Decimal("500.00"), "B": Decimal("500.00")},
     )
 
-    rl = collapse_to_revenue_lines([order], [invoice], catalog, lineage)
+    rl = collapse_to_revenue_lines([order], [invoice], catalog)
     allocated = allocate(rl)
 
     # Total transaction price = 600 + 400 = 1000. Allocated 50/50 by SSP.
@@ -104,14 +102,13 @@ def test_relative_ssp_reallocates_within_contract():
 def test_allocation_handles_rounding_to_the_cent():
     order = _order_two_lines()
     invoice = _invoice_for_order()
-    lineage = build_lineage([order], [invoice])
 
     # Awkward SSP ratio to force rounding.
     catalog = StaticSSPCatalog(
         by_item={"A": Decimal("333.33"), "B": Decimal("666.67")},
     )
     allocated = allocate(
-        collapse_to_revenue_lines([order], [invoice], catalog, lineage)
+        collapse_to_revenue_lines([order], [invoice], catalog)
     )
     total = sum((l.allocated_amount for l in allocated), Decimal("0"))
     assert total == Decimal("1000.00")  # exact to the cent

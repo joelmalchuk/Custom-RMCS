@@ -19,7 +19,7 @@ def test_cli_produces_fbdi_zip(tmp_path: Path, capsys) -> None:
     om_extract = tmp_path / "in" / "om.json"
     ar_extract = tmp_path / "in" / "ar.json"
     ssp = tmp_path / "in" / "ssp.json"
-    lineage = tmp_path / "state" / "lineage.json"
+    journal = tmp_path / "state" / "load_state.json"
     out = tmp_path / "out" / "rmcs_fbdi.zip"
 
     _write_json(
@@ -93,8 +93,9 @@ def test_cli_produces_fbdi_zip(tmp_path: Path, capsys) -> None:
             "--om-extract", str(om_extract),
             "--ar-extract", str(ar_extract),
             "--ssp-catalog", str(ssp),
-            "--lineage-store", str(lineage),
+            "--state-journal", str(journal),
             "--out", str(out),
+            "--run-id", "RUN-2026-05-26-A",
         ]
     )
     assert rc == 0
@@ -103,6 +104,7 @@ def test_cli_produces_fbdi_zip(tmp_path: Path, capsys) -> None:
     assert summary["source_document_count"] == 1
     assert summary["adjustment_document_count"] == 0
     assert summary["revenue_line_count"] == 1
+    assert summary["run_id"] == "RUN-2026-05-26-A"
 
     assert out.exists()
     with zipfile.ZipFile(out) as zf:
@@ -124,7 +126,13 @@ def test_cli_produces_fbdi_zip(tmp_path: Path, capsys) -> None:
         assert "CUSTOMER_PAY" in sub_lines_csv
         assert "INSURANCE_PAY" in sub_lines_csv
 
-    # lineage persisted for next run
-    assert lineage.exists()
-    persisted = json.loads(lineage.read_text())
-    assert len(persisted["entries"]) == 2
+    # state journal records one PENDING entry per emitted source-doc line,
+    # tagged with the OIC run id for downstream feedback correlation
+    assert journal.exists()
+    persisted = json.loads(journal.read_text())
+    assert len(persisted["entries"]) == 1
+    entry = persisted["entries"][0]
+    assert entry["state"] == "PENDING"
+    assert entry["last_run_id"] == "RUN-2026-05-26-A"
+    assert entry["om_order_number"] == "OM-1001"
+    assert entry["om_line_number"] == "1"
