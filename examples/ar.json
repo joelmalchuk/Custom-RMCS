@@ -1,0 +1,50 @@
+{
+  "invoices": [
+    {
+      "invoice_number": "AR-9001",
+      "customer_number": "C-42",
+      "business_unit": "US-OPS",
+      "invoice_date": "2026-05-03",
+      "currency_code": "USD",
+      "lines": [
+        {
+          "invoice_line_number": "1",
+          "om_order_number": "OM-1001",
+          "om_line_number": "1",
+          "price_component_code": "CUSTOMER_PAY",
+          "item_number": "RX-100",
+          "quantity": "1",
+          "amount": "200.00"
+        },
+        {
+          "invoice_line_number": "2",
+          "om_order_number": "OM-1001",
+          "om_line_number": "1",
+          "price_component_code": "INSURANCE_PAY",
+          "item_number": "RX-100",
+          "quantity": "1",
+          "amount": "800.00"
+        },
+        {
+          "invoice_line_number": "3",
+          "om_order_number": "OM-1001",
+          "om_line_number": "2",
+          "price_component_code": "CUSTOMER_PAY",
+          "item_number": "RX-200",
+          "quantity": "2",
+          "amount": "100.00"
+        },
+        {
+          "invoice_line_number": "4",
+          "om_order_number": "OM-1001",
+          "om_line_number": "2",
+          "price_component_code": "INSURANCE_PAY",
+          "item_number": "RX-200",
+          "quantity": "2",
+          "amount": "400.00"
+        }
+      ]
+    }
+  ],
+  "credit_memos": []
+}

@@ -38,6 +38,10 @@ def build_adjustments(
             bucket = per_om_line.setdefault(
                 key,
                 {
+                    # Quantity is taken as the max across the price-component
+                    # split lines because every split line for the same OM
+                    # line carries the same physical quantity -- only the
+                    # *amount* is split. Summing would double-count.
                     "quantity": Decimal("0"),
                     "amount": Decimal("0"),
                     "customer": Decimal("0"),
@@ -48,7 +52,8 @@ def build_adjustments(
                     ),
                 },
             )
-            bucket["quantity"] += cl.quantity
+            if cl.quantity > bucket["quantity"]:
+                bucket["quantity"] = cl.quantity
             bucket["amount"] += cl.amount
             if cl.price_component_code == CUSTOMER_PAY:
                 bucket["customer"] += cl.amount
