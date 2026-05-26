@@ -1,0 +1,68 @@
+{
+  "invoices": [
+    {
+      "invoice_number": "AR-2026-0099",
+      "customer_number": "C-77",
+      "business_unit": "US-OPS",
+      "invoice_date": "2026-05-13",
+      "currency_code": "USD",
+      "lines": [
+        {
+          "invoice_line_number": "1",
+          "om_order_number": "OM-2026-0042",
+          "om_line_number": "1",
+          "price_component_code": "CUSTOMER_PAY",
+          "item_number": "OPT-PROG",
+          "quantity": "1",
+          "amount": "107.50"
+        },
+        {
+          "invoice_line_number": "2",
+          "om_order_number": "OM-2026-0042",
+          "om_line_number": "1",
+          "price_component_code": "INSURANCE_PAY",
+          "item_number": "OPT-PROG",
+          "quantity": "1",
+          "amount": "322.50"
+        },
+        {
+          "invoice_line_number": "3",
+          "om_order_number": "OM-2026-0042",
+          "om_line_number": "2",
+          "price_component_code": "CUSTOMER_PAY",
+          "item_number": "SUN-SV",
+          "quantity": "1",
+          "amount": "47.00"
+        },
+        {
+          "invoice_line_number": "4",
+          "om_order_number": "OM-2026-0042",
+          "om_line_number": "2",
+          "price_component_code": "INSURANCE_PAY",
+          "item_number": "SUN-SV",
+          "quantity": "1",
+          "amount": "141.00"
+        },
+        {
+          "invoice_line_number": "5",
+          "om_order_number": "OM-2026-0042",
+          "om_line_number": "3",
+          "price_component_code": "CUSTOMER_PAY",
+          "item_number": "OPT-SV",
+          "quantity": "1",
+          "amount": "29.00"
+        },
+        {
+          "invoice_line_number": "6",
+          "om_order_number": "OM-2026-0042",
+          "om_line_number": "3",
+          "price_component_code": "INSURANCE_PAY",
+          "item_number": "OPT-SV",
+          "quantity": "1",
+          "amount": "87.00"
+        }
+      ]
+    }
+  ],
+  "credit_memos": []
+}

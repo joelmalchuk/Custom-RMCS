@@ -32,8 +32,13 @@ that:
   Integration Cloud (OIC).
 - Reconstructs RMCS-compatible source documents from the split AR lines using
   the OM line as the unit of revenue.
-- Maintains an explicit **line lineage map** so that RMAs and reallocations
-  reference the original commercial line, not the split AR lines.
+- Reads the OM <-> AR relationship directly from **AR DFFs** populated by
+  Autoinvoice (`omOrderNumber`, `omLineNumber`, `priceComponentCode`); AR
+  is the system of record. The integration does not maintain a separate
+  lineage store.
+- Persists only its own **load state** in a narrow journal (PENDING /
+  LOADED / REJECTED / PARTIAL) tagged with the OIC run id, used for
+  reconciliation and period-close exceptions.
 - Provides externally managed **SSP** and **discount allocation** logic that
   RMCS imports as pre-allocated source data.
 - Emits the output as **file-based FBDI** (CSV + control files, packaged as a
@@ -62,17 +67,19 @@ See:
 
 ```
 custom_rmcs/
-  models/         # canonical data structures (OM, AR, RMCS, lineage)
+  models/         # canonical data structures (OM, AR, RMCS)
   feeders/        # OM and AR feeder adapters (consume OIC extracts)
-  lineage/        # OM-line <-> AR-line lineage tracking
-  transform/      # rebuild RMCS source documents from AR + lineage
-  allocation/    # SSP catalog + discount reallocation
+  identifiers.py  # deterministic source-doc / revenue-line id functions
+  state/          # load-state journal (PENDING / LOADED / REJECTED / PARTIAL)
+  transform/      # rebuild RMCS source documents from AR (DFFs)
+  allocation/     # SSP catalog + relative-SSP discount reallocation
   rma/            # RMA reconstruction against original commercial lines
   fbdi/           # FBDI CSV writer + ZIP packager for RMCS import
   pipeline.py     # orchestrator that wires the stages together
   __main__.py     # CLI entrypoint OIC invokes
 tests/            # pytest suite covering the key business scenarios
 docs/             # architecture and operational documentation
+examples/         # OIC-staged extract samples + per-scenario walkthroughs
 ```
 
 ## Quick start
@@ -91,13 +98,25 @@ python -m custom_rmcs \
     --om-extract ./extracts/om.json \
     --ar-extract ./extracts/ar.json \
     --ssp-catalog ./extracts/ssp.json \
-    --lineage-store ./state/lineage.json \
-    --out ./out/rmcs_fbdi.zip
+    --state-journal ./state/load_state.json \
+    --out ./out/rmcs_fbdi.zip \
+    --run-id "$OIC_RUN_ID"
 ```
 
 The CLI is what an OIC integration calls from a function/SSH step; everything
 about the actual Oracle transport (UCM upload, ESS job submission) lives in
-OIC, not here.
+OIC, not here. After the FBDI ESS job completes, OIC calls back into this
+library via `LoadStateJournal.record_load_result()` to flip journal entries
+to `LOADED` / `REJECTED` / `PARTIAL`.
+
+## Examples
+
+Two scenarios live in [`examples/`](examples/README.md):
+
+- `single_line_split/` -- one OM line with a customer/insurance split.
+- `multi_line_with_discount/` -- three OM lines with line-level discount
+  where AR per-line invoiced amounts diverge from RMCS revenue (the
+  textbook relative-SSP allocation case).
 
 ## Status
 

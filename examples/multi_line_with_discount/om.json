@@ -1,0 +1,52 @@
+{
+  "orders": [
+    {
+      "order_number": "OM-2026-0042",
+      "customer_number": "C-77",
+      "business_unit": "US-OPS",
+      "ordered_date": "2026-05-10",
+      "currency_code": "USD",
+      "lines": [
+        {
+          "line_number": "1",
+          "item_number": "OPT-PROG",
+          "item_class": "PROGRAM",
+          "quantity": "1",
+          "unit_of_measure": "Ea",
+          "fulfillment_date": "2026-05-12",
+          "price_components": [
+            {"component_code": "LIST",          "amount": "430.00"},
+            {"component_code": "CUSTOMER_PAY",  "amount": "107.50"},
+            {"component_code": "INSURANCE_PAY", "amount": "322.50"}
+          ]
+        },
+        {
+          "line_number": "2",
+          "item_number": "SUN-SV",
+          "item_class": "SERVICE",
+          "quantity": "1",
+          "unit_of_measure": "Ea",
+          "fulfillment_date": "2026-05-12",
+          "price_components": [
+            {"component_code": "LIST",          "amount": "235.00"},
+            {"component_code": "CUSTOMER_PAY",  "amount": "47.00"},
+            {"component_code": "INSURANCE_PAY", "amount": "141.00"}
+          ]
+        },
+        {
+          "line_number": "3",
+          "item_number": "OPT-SV",
+          "item_class": "SERVICE",
+          "quantity": "1",
+          "unit_of_measure": "Ea",
+          "fulfillment_date": "2026-05-12",
+          "price_components": [
+            {"component_code": "LIST",          "amount": "145.00"},
+            {"component_code": "CUSTOMER_PAY",  "amount": "29.00"},
+            {"component_code": "INSURANCE_PAY", "amount": "87.00"}
+          ]
+        }
+      ]
+    }
+  ]
+}

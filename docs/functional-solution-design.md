@@ -74,8 +74,16 @@ Key functional principles:
   collapsed before it reaches RMCS.
 - **SSP and discount allocation are externalized.** RMCS receives pre-
   allocated source documents and does not run its own allocation.
-- **Lineage is persisted.** Every AR-side event can be traced back to the
-  originating OM line and the corresponding RMCS performance obligation.
+- **The OM <-> AR relationship is read from AR DFFs.** OM populates
+  `omOrderNumber`, `omLineNumber`, and `priceComponentCode` on every AR
+  invoice line and credit-memo line via Autoinvoice. The integration
+  reads these fields directly on every run; no separate lineage store is
+  maintained.
+- **Only integration load state is persisted.** A narrow load-state
+  journal records, per emitted RMCS source-document line, whether the
+  FBDI ESS job loaded it (`PENDING` / `LOADED` / `REJECTED` / `PARTIAL`)
+  and the OIC run id. This is what the daily reconciliation report and
+  the period-close exception list are built from.
 
 ## 4. Scope
 
@@ -129,8 +137,8 @@ Key functional principles:
 5. OIC stages the extracts as JSON and invokes the **custom integration
    layer** (this codebase).
 6. The integration layer:
-   - **Builds lineage** -- ties every AR line back to its OM line and
-     assigns a deterministic *revenue line id* per OM line.
+   - Reads the OM-line reference and price-component code from AR DFFs on
+     each AR line (no lineage index is built or persisted).
    - **Collapses** the split AR lines back to one revenue line per OM line.
    - **Allocates** the transaction price across performance obligations
      within the OM order using the externally managed SSP catalog
@@ -138,12 +146,14 @@ Key functional principles:
    - **Emits a file-based FBDI ZIP** containing the RMCS source-document
      header, lines, sub-lines (billing-party reference), and the import
      control file.
+   - Writes a `PENDING` entry to the load-state journal for every emitted
+     POB line, tagged with the OIC run id.
 7. OIC uploads the FBDI ZIP to **UCM** and submits the *Import Customer
    Contract Source Data* ESS job through the ERP Cloud adapter.
-8. OIC polls the ESS job until terminal state. On success, it marks the
-   relevant lineage entries as `LOADED`; on partial/failure, it pulls the
-   import error report and marks the affected entries `REJECTED` for
-   human review.
+8. OIC polls the ESS job until terminal state. On success, it calls back
+   into this layer to flip the journal entries to `LOADED`; on
+   partial/failure, it pulls the import error report and marks the
+   affected entries `REJECTED` (with error text) for human review.
 9. RMCS owns recognition from this point: identify contract -> performance
    obligation -> allocation already done -> recognition schedule based on
    the fulfillment date emitted in the source document.
@@ -175,8 +185,8 @@ change, quantity change, item substitution, cancellation).
    denials, and full RMAs are all expressed this way.)
 2. The next OIC run extracts the credit memo.
 3. The integration layer:
-   - Looks up each credit-memo line in the lineage store to find the
-     originating OM line and revenue line id.
+   - Reads the OM-line reference DFFs that AR populated on the
+     credit-memo line (the same DFFs as the originating invoice line).
    - **Aggregates** the credit-memo lines that hit the same OM line into a
      single adjustment line so RMCS sees one negative entry per
      performance obligation (revenue recognition is at the POB level, not
@@ -189,26 +199,27 @@ change, quantity change, item substitution, cancellation).
 
 ### 6.4 Reconciliation (daily and period-end)
 
-The integration produces, from the lineage store, a reconciliation report:
+The integration produces, from the load-state journal joined to AR
+extracts, a reconciliation report:
 
-| Metric                                 | Source              | Tolerance               |
-|----------------------------------------|---------------------|-------------------------|
-| Sum of AR billed amounts per OM line   | AR (customer+insurance) | 0.00 vs RMCS line total |
-| Sum of RMCS allocated amounts per OM line | RMCS source doc lines | -- exact match expected -- |
-| Count of OM lines without RMCS docs    | Lineage store       | 0 outside SLA window    |
-| Count of REJECTED lineage entries      | Lineage store       | 0 at period close       |
+| Metric                                       | Source                  | Tolerance               |
+|----------------------------------------------|-------------------------|-------------------------|
+| Sum of AR billed amounts per OM line         | AR (customer+insurance) | 0.00 vs allocated total |
+| Sum of RMCS allocated amounts per OM order   | RMCS source-doc lines   | exact match expected    |
+| Count of OM lines without LOADED journal entry | Load-state journal    | 0 outside SLA window    |
+| Count of REJECTED journal entries            | Load-state journal      | 0 at period close       |
 
 Revenue Accounting reviews and clears any non-zero variance before close.
 
 ### 6.5 Exception handling
 
-| Exception                                                  | Detected by         | Disposition                                                                            |
-|-------------------------------------------------------------|---------------------|----------------------------------------------------------------------------------------|
-| AR line references an OM line not present in OM extract     | Lineage builder     | Quarantined; OIC notifies Integration Operator; AR Billing investigates                |
-| No SSP available for an item or item class                  | SSP catalog lookup  | Revenue line falls through to "as-billed"; flagged for Revenue Accountant override     |
-| FBDI import ESS job returns partial failure                 | OIC poll            | Failed rows marked REJECTED in lineage; success rows marked LOADED; report attached    |
-| Credit memo references an AR line with no lineage entry     | RMA builder         | Hard error; OIC notifies Revenue Accountant; lineage must be rebuilt before re-run     |
-| Contract modification arrives before original is LOADED     | Pipeline orchestrator | Modification deferred until original confirmed LOADED in lineage store                  |
+| Exception                                                       | Detected by           | Disposition                                                                       |
+|-----------------------------------------------------------------|-----------------------|-----------------------------------------------------------------------------------|
+| AR line references an OM order not present in the OM extract    | Collapse step         | The orphan AR amount does not flow into a revenue line; surfaces as reconciliation variance and is quarantined |
+| AR line missing the OM-ref or price-component DFFs              | AR feeder validation  | Hard error; OIC notifies AR Billing; FR-16 must hold for the integration to run   |
+| No SSP available for an item or item class                      | SSP catalog lookup    | Revenue line falls through to "as-billed"; flagged for Revenue Accountant override |
+| FBDI import ESS job returns partial failure                     | OIC post-job feedback | Failed rows flipped to REJECTED in the load-state journal; success rows LOADED   |
+| Contract modification arrives before original is LOADED         | Pipeline orchestrator | Modification deferred until original journal entry is LOADED                      |
 
 ## 7. Functional requirements
 
@@ -222,13 +233,16 @@ Revenue Accounting reviews and clears any non-zero variance before close.
 | FR-06 | Transaction price must be allocated using the relative-SSP method to the cent, with last-line residual correction        | Must     |
 | FR-07 | RMAs/credit memos must aggregate by OM line and emit one adjustment entry per performance obligation                      | Must     |
 | FR-08 | Replays of the same OM/AR data must not produce duplicate RMCS rows (idempotent source document numbers)                  | Must     |
-| FR-09 | The lineage store must record `PENDING`, `LOADED`, `REJECTED`, `PARTIAL` states per AR line                              | Must     |
+| FR-09 | The load-state journal must record `PENDING`, `LOADED`, `REJECTED`, `PARTIAL` states per emitted RMCS POB line, tagged with OIC run id | Must     |
 | FR-10 | A daily AR-vs-RMCS reconciliation report must be produced per OM order                                                   | Must     |
 | FR-11 | Contract modifications must be flagged and reference the prior source document number                                    | Must     |
 | FR-12 | Exception cases (FR-05 no-SSP, FR-09 REJECTED) must be visible to Revenue Accountant in OIC monitoring                   | Must     |
 | FR-13 | Sales orders without price-component splits must continue through the seeded integration unaffected                       | Must     |
 | FR-14 | The FBDI column schema must be release-aligned with the target RMCS template and version-controlled                       | Must     |
 | FR-15 | Tax amounts on the AR invoice must not flow into RMCS as part of the allocated transaction price                          | Must     |
+| FR-16 | OM Autoinvoice must populate AR invoice and credit-memo line DFFs with the originating OM order number, OM line number, and price-component code; these DFFs are the system of record for the OM <-> AR <-> RMCS relationship | Must     |
+| FR-17 | The integration must not write back to AR; the AR DFFs are read-only from this layer's perspective                       | Must     |
+| FR-18 | A re-emit of an OM line whose journal entry is `LOADED` must not produce duplicate RMCS rows; replays for `REJECTED` entries are permitted and reset state to `PENDING` | Must     |
 
 ## 8. Functional data model
 
@@ -240,21 +254,31 @@ OMOrder
   +-- OMOrderLine                   (unit of revenue / POB)
         +-- OMPriceComponent        (LIST, CUSTOMER_PAY, INSURANCE_PAY)
 ARInvoice
-  +-- ARInvoiceLine                 (one per price component, refs OM line)
+  +-- ARInvoiceLine                 (one per price component)
+        DFFs: omOrderNumber, omLineNumber, priceComponentCode  -- system of record
 ARCreditMemo
-  +-- ARCreditMemoLine              (refs AR line + OM line)
-LineageMap
-  +-- LineageEntry                  (AR line <-> OM line <-> RMCS POB)
+  +-- ARCreditMemoLine              (refs AR invoice line)
+        DFFs: omOrderNumber, omLineNumber, priceComponentCode  -- system of record
 SSPCatalog                          (item / class -> SSP per unit, effective-dated)
 RMCSSourceDocument                  (one per OM order)
   +-- RMCSSourceDocumentLine        (one per OM line == one POB)
         +-- billing sub-lines       (customer-pay, insurance-pay; reference only)
 RMCSAdjustmentDocument              (one per credit memo)
+LoadStateJournal                    (integration state, NOT business relationship)
+  +-- LoadStateEntry                (one per emitted RMCS POB line:
+                                     PENDING / LOADED / REJECTED / PARTIAL,
+                                     last_run_id, last_error, loaded_at)
 ```
 
-The **lineage map** is the single source of truth for routing AR-side
-events to RMCS performance obligations and is also the basis of the
-reconciliation report.
+Two important separations:
+
+1. The **OM <-> AR <-> RMCS relationship** is held by AR DFFs populated by
+   Autoinvoice. AR is the system of record. There is no custom relationship
+   store that could drift from AR.
+2. The **integration's load state** is held in the load-state journal. It
+   records only what this integration did with each POB line; it is not
+   the system of record for any business fact. It is the basis of the
+   reconciliation report and the period-close exception list.
 
 ## 9. Integration touchpoints
 
@@ -273,32 +297,39 @@ reconciliation report.
 
 ## 10. Controls and segregation of duties
 
+- **AR is the system of record for the OM <-> AR relationship.** The
+  integration cannot create or modify that relationship; it reads the
+  AR DFFs. This eliminates the risk of a custom store drifting from AR.
 - **Change control on the SSP catalog**: only Revenue Accounting can
   modify SSP values; changes are versioned and effective-dated.
 - **No direct write to RMCS** by the integration outside the FBDI ESS job
   -- the ESS job is the only entry point.
+- **No write to AR** by the integration -- the integration is read-only
+  with respect to OM and AR (FR-17).
 - **Idempotent source document numbers** -- replays cannot create
   duplicates without an explicit operator action.
-- **Lineage immutability** -- once an entry is `LOADED`, only Revenue
-  Accountant can change its state, and only via documented exception
-  workflows.
+- **Load-state journal protections** -- once an entry is `LOADED`, the
+  pipeline will not regress it to `PENDING` on a re-emit; only Revenue
+  Accountant can override `LOADED` state, and only via a documented
+  exception workflow.
 - **Reconciliation sign-off** -- daily reconciliation report must be
   acknowledged by Revenue Accounting; period close cannot proceed with
   open exceptions.
 - **Segregation**: AR Billing cannot release SSP changes; Revenue
   Accountant cannot release AR invoices; Integration Operator cannot
-  change SSPs or override REJECTED entries.
+  change SSPs or override `LOADED`/`REJECTED` journal entries.
 
 ## 11. Reporting
 
-Produced from the lineage store and the AR/RMCS extracts:
+Produced from the load-state journal and the AR/RMCS extracts:
 
 1. **Daily AR-to-RMCS reconciliation** -- per OM order, per OM line, per
    day. Variances flagged.
 2. **Allocation exception report** -- OM lines that fell through to
    "as-billed" due to missing SSP.
-3. **Lineage state report** -- counts of `PENDING`, `LOADED`, `REJECTED`
-   by age bucket.
+3. **Journal state report** -- counts of `PENDING`, `LOADED`, `REJECTED`,
+   `PARTIAL` by age bucket; tagged with the OIC run id that produced
+   the entry.
 4. **Modification audit trail** -- every RMCS modification document with
    its prior version and the responsible OIC run id.
 5. **Period-close package** -- aggregated revenue by item class and
@@ -307,8 +338,10 @@ Produced from the lineage store and the AR/RMCS extracts:
 
 ## 12. Assumptions and dependencies
 
-- OM is configured to populate `om_order_number` and `om_line_number` on
-  every AR line it generates from a price-component-driven order.
+- OM Autoinvoice is configured to populate `omOrderNumber`,
+  `omLineNumber`, and `priceComponentCode` DFFs on every AR invoice line
+  and every credit-memo line generated from a price-component-driven
+  order. This is FR-16; the integration cannot operate without it.
 - BICC extracts (or REST equivalents) for OM orders, AR invoices, and AR
   credit memos are available with reliable last-update timestamps.
 - The RMCS *Import Customer Contract Source Data* FBDI template is
@@ -323,6 +356,7 @@ Produced from the lineage store and the AR/RMCS extracts:
 
 | Risk                                                                          | Likelihood | Impact | Mitigation                                                                                  |
 |-------------------------------------------------------------------------------|------------|--------|---------------------------------------------------------------------------------------------|
+| AR DFFs (FR-16) not populated on a subset of orders                            | Medium     | High   | AR feeder validates DFFs and quarantines on miss; pre-go-live audit of DFF configuration; production canary on first-of-month |
 | FBDI column list changes with an Oracle quarterly release                      | Medium     | Medium | Schema kept in one file; quarterly review against template; release-gated regression tests   |
 | SSP catalog stale or missing entries at period close                           | Medium     | High   | Allocation exception report reviewed daily; period-close blocker on open exceptions          |
 | Late-arriving AR data lands after period close                                 | Medium     | Medium | Lineage state tracks PENDING; post-close adjustments routed through normal late-entry process |
@@ -358,5 +392,11 @@ Produced from the lineage store and the AR/RMCS extracts:
   each POB's SSP.
 - **Price component** -- An OM construct that lets a single order line
   produce multiple billed amounts (e.g. customer-pay, insurance-pay).
-- **Lineage entry** -- Persisted record tying one AR invoice line to its
-  originating OM line and the resulting RMCS performance obligation.
+- **DFF** -- Descriptive Flexfield. Oracle's standard mechanism for
+  attaching custom attributes to a seeded entity. AR carries the OM-line
+  reference and price-component code on each invoice/credit-memo line
+  via DFFs.
+- **Load-state journal** -- The narrow integration-only store that
+  records the status of every emitted RMCS POB line (PENDING / LOADED /
+  REJECTED / PARTIAL) and the OIC run id responsible. Not a system of
+  record for any business fact.
