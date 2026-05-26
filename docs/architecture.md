@@ -37,18 +37,22 @@ the transformed structure or, worse, allocates incorrectly.
 
 ## 2. Solution overview
 
-We decouple RMCS from AR. OM and AR become **external feeder systems** read by
-this layer, which reconstructs an RMCS-compatible source document set and
-loads it through the RMCS Source Document REST/FBDI import surface as if it
-came from a non-Oracle system.
+We decouple RMCS from AR. OM and AR become **external feeder systems**
+extracted by **Oracle Integration Cloud (OIC)**. OIC hands the raw extracts
+to this layer, which reconstructs an RMCS-compatible source document set and
+emits a **file-based FBDI** ZIP. OIC then uploads the ZIP to **UCM** and
+invokes the *Import Customer Contract Source Data* ESS job, so RMCS sees the
+data as if it came from a non-Oracle source system.
 
 ```
-+---------+      +----------+      +----------------------+      +-------+
-|   OM    | ---> |    AR    | ---> | custom_rmcs pipeline | ---> | RMCS  |
-+---------+      +----------+      +----------------------+      +-------+
-     |               |                       ^
-     |               |                       |
-     +------- lineage map (persisted) -------+
++---------+    +----------+         +------ OIC orchestration ------+        +------+
+|   OM    | -> |    AR    |  --->   |  extract -> custom_rmcs lib   |  --->  | UCM  |
++---------+    +----------+         |  -> FBDI ZIP -> UCM upload    |        +------+
+     |             |                |  -> Import ESS job submit     |            |
+     |             |                +-------------------------------+            v
+     |             |                              ^                          +------+
+     |             |                              |                          | RMCS |
+     +------ lineage store (DB or file) ----------+                          +------+
 ```
 
 Key properties:
@@ -75,16 +79,34 @@ testable.
 
 | # | Stage              | Input                              | Output                                  |
 |---|--------------------|------------------------------------|-----------------------------------------|
-| 1 | Ingest OM          | OM feeder adapter                  | `OMOrder` (with price components)       |
-| 2 | Ingest AR          | AR feeder adapter                  | `ARInvoice` (split lines)               |
+| 1 | Ingest OM          | OM feeder adapter (OIC extract)    | `OMOrder` (with price components)       |
+| 2 | Ingest AR          | AR feeder adapter (OIC extract)    | `ARInvoice` (split lines)               |
 | 3 | Build lineage      | `OMOrder` + `ARInvoice`            | `LineageMap`                            |
 | 4 | Collapse to OM line| AR lines + lineage                 | one revenue line per OM line            |
 | 5 | Allocate SSP       | revenue lines + SSP catalog        | per-line allocated amounts              |
-| 6 | Emit RMCS docs     | allocated revenue lines + lineage  | `RMCSSourceDocument`                    |
-| 7 | Apply RMAs         | AR credit memos + lineage          | adjustments referencing original POBs   |
+| 6 | Emit FBDI          | allocated revenue lines + lineage  | RMCS FBDI CSVs + control file in a ZIP  |
+| 7 | Apply RMAs         | AR credit memos + lineage          | adjustment rows in the same FBDI batch  |
 
 Stages 1-2 are pluggable behind interfaces in `custom_rmcs/feeders/`. Stages
-3-7 are deterministic functions over the canonical models.
+3-7 are deterministic functions over the canonical models. Stage 6 is
+implemented in `custom_rmcs/fbdi/`.
+
+### Where OIC fits
+
+OIC owns everything *outside* this library:
+
+- **Inbound**: OIC integrations call OM and AR BICC extract jobs (or REST
+  endpoints for incremental deltas), pick up the resulting files from UCM,
+  and stage them as JSON for this library to consume. The shape of that JSON
+  is defined by `custom_rmcs/feeders/json_feeder.py` and is intentionally a
+  thin denormalization of the BICC/REST output.
+- **Outbound**: OIC takes the FBDI ZIP produced by stage 6, uploads it to UCM
+  through the UCM adapter, then submits the `Import Customer Contract Source
+  Data` ESS job through the ERP Cloud adapter. It polls the job to terminal
+  state and pulls the import error report.
+- **Reconciliation**: OIC posts the job results back to this library so the
+  lineage store can mark each OM line as `LOADED`, `REJECTED`, or
+  `PARTIAL`.
 
 ## 4. Lineage model
 
@@ -138,12 +160,43 @@ When AR issues a credit memo against a split invoice line:
 - **Backfill**: stages 3-7 are pure and can be re-run over historical
   feeder data without side effects beyond updating the lineage store.
 
-## 8. Out of scope (for this scaffold)
+## 8. FBDI emission (stage 6)
 
-- Concrete Oracle Cloud REST / BICC / FBDI clients. The feeder interfaces are
-  defined; in-memory implementations are provided for testing. Production
-  adapters should be added in `custom_rmcs/feeders/oracle/`.
+The RMCS *Import Customer Contract Source Data* FBDI template is a workbook
+that, when prepared, produces a small set of CSV files plus a control file,
+zipped together. The relevant interface tables are:
+
+- `VRM_SOURCE_DOCUMENTS_INT`  -- one row per source document header
+- `VRM_SOURCE_DOC_LINES_INT`  -- one row per performance obligation
+- `VRM_SOURCE_DOC_SUB_LINES_INT` -- optional, used when a line has sub-lines
+- `VRM_SRC_DOC_BILL_PLANS_INT`, `VRM_SRC_DOC_REV_PLANS_INT` -- billing /
+  revenue plans when applicable
+
+The exact column lists in these CSVs are versioned by Oracle release. We
+keep them in `custom_rmcs/fbdi/schema.py` as ordered tuples so they are
+easy to diff against the current template export.
+
+The emitter writes:
+
+```
+out/rmcs_fbdi.zip
+  VRM_SOURCE_DOCUMENTS_INT.csv
+  VRM_SOURCE_DOC_LINES_INT.csv
+  VRM_SOURCE_DOC_SUB_LINES_INT.csv
+  VrmExtImportTemplate.properties  (control / load-request metadata)
+```
+
+The ZIP path is returned to OIC, which performs the UCM upload and ESS
+submission.
+
+## 9. Out of scope (for this scaffold)
+
+- Concrete Oracle Cloud REST / BICC clients. OIC owns the actual extracts;
+  this library consumes the OIC-staged JSON. A reference JSON shape is
+  documented in `custom_rmcs/feeders/json_feeder.py`.
+- The UCM upload and ESS job submission. Those are OIC integration steps,
+  not Python code.
 - Persistence backend for the lineage store. The reference implementation
-  uses an in-memory dict; swap in a database-backed store for production.
-- Authentication, retries, observability -- these belong in the runtime that
-  hosts this library, not in the integration logic itself.
+  uses a JSON file; swap in a database-backed store for production.
+- Authentication, retries, observability -- these belong in OIC and in the
+  runtime that hosts this library, not in the integration logic itself.

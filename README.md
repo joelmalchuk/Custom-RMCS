@@ -28,13 +28,29 @@ Once the price-component approach is used:
 This project replaces the seeded AR -> RMCS integration with a custom pipeline
 that:
 
-- Treats OM and AR as **external feeder systems**.
+- Treats OM and AR as **external feeder systems**, extracted by Oracle
+  Integration Cloud (OIC).
 - Reconstructs RMCS-compatible source documents from the split AR lines using
   the OM line as the unit of revenue.
 - Maintains an explicit **line lineage map** so that RMAs and reallocations
   reference the original commercial line, not the split AR lines.
 - Provides externally managed **SSP** and **discount allocation** logic that
   RMCS imports as pre-allocated source data.
+- Emits the output as **file-based FBDI** (CSV + control files, packaged as a
+  ZIP) for the RMCS *Import Customer Contract Source Data* import process.
+
+## Transport: OIC + FBDI
+
+This library is the transformation core. The runtime around it is OIC:
+
+1. An OIC orchestration extracts OM and AR data (BICC extracts and/or REST).
+2. OIC posts the extracts (as JSON) to this library, either by invoking the
+   CLI in a function step or by calling an HTTP service that wraps it.
+3. The library produces an RMCS FBDI ZIP at the path specified by OIC.
+4. OIC uploads the ZIP to **UCM** and invokes the ERP Cloud *Import Customer
+   Contract Source Data* ESS job via the ERP Cloud adapter.
+5. OIC polls the ESS job for completion, fetches the error report, and
+   feeds reconciliation back to this library's lineage store.
 
 See [`docs/architecture.md`](docs/architecture.md) for the full design.
 
@@ -43,12 +59,14 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design.
 ```
 custom_rmcs/
   models/         # canonical data structures (OM, AR, RMCS, lineage)
-  feeders/        # OM and AR feeder adapters (read-only ingestion)
+  feeders/        # OM and AR feeder adapters (consume OIC extracts)
   lineage/        # OM-line <-> AR-line lineage tracking
   transform/      # rebuild RMCS source documents from AR + lineage
-  allocation/     # SSP catalog + discount reallocation
+  allocation/    # SSP catalog + discount reallocation
   rma/            # RMA reconstruction against original commercial lines
+  fbdi/           # FBDI CSV writer + ZIP packager for RMCS import
   pipeline.py     # orchestrator that wires the stages together
+  __main__.py     # CLI entrypoint OIC invokes
 tests/            # pytest suite covering the key business scenarios
 docs/             # architecture and operational documentation
 ```
@@ -62,8 +80,25 @@ pip install -e ".[dev]"
 pytest
 ```
 
+## CLI
+
+```bash
+python -m custom_rmcs \
+    --om-extract ./extracts/om.json \
+    --ar-extract ./extracts/ar.json \
+    --ssp-catalog ./extracts/ssp.json \
+    --lineage-store ./state/lineage.json \
+    --out ./out/rmcs_fbdi.zip
+```
+
+The CLI is what an OIC integration calls from a function/SSH step; everything
+about the actual Oracle transport (UCM upload, ESS job submission) lives in
+OIC, not here.
+
 ## Status
 
-Scaffold + reference implementation with in-memory feeder adapters. Concrete
-Oracle Cloud REST / BICC adapters are stubbed; replace them with real clients
-before going to production.
+Scaffold + reference implementation with JSON-file feeders that match what an
+OIC BICC/REST extract step would dump. The FBDI CSV schema is configurable
+because Oracle revises template columns between releases — adjust
+`custom_rmcs/fbdi/schema.py` to your tenant's current template before
+go-live.
