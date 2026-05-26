@@ -52,7 +52,11 @@ This library is the transformation core. The runtime around it is OIC:
 5. OIC polls the ESS job for completion, fetches the error report, and
    feeds reconciliation back to this library's lineage store.
 
-See [`docs/architecture.md`](docs/architecture.md) for the full design.
+See:
+
+- [`docs/functional-solution-design.md`](docs/functional-solution-design.md)
+  -- functional view for Controllership / Revenue Accounting / Audit.
+- [`docs/architecture.md`](docs/architecture.md) -- technical design.
 
 ## Project layout
 
